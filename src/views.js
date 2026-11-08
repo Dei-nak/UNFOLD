@@ -2,14 +2,15 @@ import {demoDay,data,state,layers,eventsOn,confirmedOn,plansOn,scenarioReport} f
 import {months,weekdays,parse,keyOf,plusDays,weekStart,dateLabel,cap,shortDate,minutes,clockTime,overlaps,timeSummary,durationLabel} from './dates.js';
 import {escape,icon,action,iconButton,textLink,segment,header} from './ui.js';
 function periodControls(weather=''){
+ const todayActive=state.followToday&&state.mode==='day'&&state.date===keyOf(new Date());
  return '<div class="period"><div class="controls">'+iconButton('left','shift','Попередній період','-1')+
  iconButton('right','shift','Наступний період','1')+'</div>'+
  '<div class="period-tabs"><div class="seg" role="group" aria-label="Вигляд календаря">'+
- action('Сьогодні','current-date',undefined,'class="today-button" aria-pressed="'+(state.screen==='home'&&!state.explicitPeriod)+'"')+
+ action('Сьогодні','current-date',undefined,'class="today-button" aria-pressed="'+todayActive+'"')+
  Object.entries({day:'День',week:'Тиждень',month:'Місяць'}).map(([key,label])=>action(label,'mode',key,
- 'aria-pressed="'+((state.screen!=='home'||Boolean(state.explicitPeriod))&&key===state.mode)+'"')).join('')+
+ 'aria-pressed="'+(!todayActive&&key===state.mode)+'"')).join('')+
  '</div></div><div class="top-tools">'+weather+
- action(icon('search')+'<kbd>⌘ K</kbd>','search',undefined,'class="top-search" aria-label="Пошук" aria-keyshortcuts="Control+K Meta+K"')+
+ iconButton('search','search','Пошук',undefined,'icon top-search')+
  iconButton('bell','notifications','Сповіщення')+iconButton('user','profile','Профіль',undefined,'icon profile-button')+'</div></div>';
 }
 function dateGrid(key=state.date,month=state.mode==='month',mini=false){
@@ -40,7 +41,7 @@ function dateGrid(key=state.date,month=state.mode==='month',mini=false){
 }
 function miniCalendar(){
  const key=state.miniMonth||state.date, month=parse(key);
- return '<div class="mini-head"><strong>'+months[month.getMonth()]+' '+month.getFullYear()+'</strong><div class="controls">'+
+ return '<div class="mini-head" data-month="'+key.slice(0,7)+'"><strong>'+months[month.getMonth()]+' '+month.getFullYear()+'</strong><div class="controls">'+
  iconButton('left','mini-shift','Попередній місяць','-1')+iconButton('right','mini-shift','Наступний місяць','1')+
  '</div></div>'+dateGrid(key,true,true);
 }
@@ -110,14 +111,12 @@ function timeline(events,scenario=false){
   return '<div class="slot '+type+'"><time>'+e.time+'</time><i class="point"></i>'+card+'</div>';
  }).join('')+'</div>';
 }
-const liveWaves='<svg class="live-waves" viewBox="0 0 804 183" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="wave-color"><stop stop-color="#30283c" stop-opacity=".05"/><stop offset=".45" stop-color="#7040a0" stop-opacity=".35"/><stop offset=".69" stop-color="#d8aaf6"/><stop offset="1" stop-color="#4b286d" stop-opacity=".1"/></linearGradient></defs>'+
- Array.from({length:32},(_,i)=>'<path d="M0 '+(158+i*.9)+' C180 '+(117+i*3)+' 218 '+(231-i)+' 349 '+(178+i*.8)+' S480 '+(157+i*4)+' 544 '+(76-i*.55)+' S675 '+(-36+i*2)+' 804 '+(13+i*.85)+'"/>').join('')+'</svg>';
 function liveCard(){
  const confirmed=eventsOn(state.date).filter(e=>e.layer!=='ai');
  const clock=new Date();
  const now=clock.getHours()*60+clock.getMinutes();
  const today=keyOf(clock);
- const current=state.date===today&&confirmed.find(event=>!event.done&&event.end&&minutes(event.time)<=now&&now<minutes(event.end));
+ const current=state.date===today&&confirmed.find(event=>!event.demo&&!event.done&&event.end&&minutes(event.time)<=now&&now<minutes(event.end));
  const next=confirmed.find(event=>!event.done&&(event.demo&&state.date===demoDay?event.time>='09:00':state.date>today||state.date===today&&event.time>=clockTime(clock)));
  const ai=eventsOn(state.date).find(e=>e.layer==='ai');
  const variant=state.live==='auto'?(current?'current':next?'upcoming':ai?'idea':confirmed.length?'past':'empty'):state.live;
@@ -136,11 +135,18 @@ function liveCard(){
  const percent=current?(paused?state.pausedLive.percent:Math.round(100*(now-minutes(current.time))/(minutes(current.end)-minutes(current.time)))):0;
  const progress=variant==='current'?'<div class="live-meter"><div><small>Залишилося</small><strong>'+(paused?state.pausedLive.remaining:remaining)+' хв</strong></div>'+
  iconButton(paused?'play':'pause','live-pause',paused?'Відновити оновлення індикатора':'Призупинити оновлення індикатора',current.id)+
- progressBar(percent,'Прогрес поточної події')+'</div>':textLink(label,act,value);
- return '<div class="live" aria-label="Live Card">'+liveWaves+'<div class="live-copy"><div class="eyebrow"><i class="dot"></i> '+
- (variant==='current'?'Зараз · до '+current.end:featured?(featured.demo&&featured.date<=today&&featured.time<clockTime(clock)?'Деморозклад':'Попереду · '+featured.time):state.live==='auto'?'Огляд дня':'Приклад')+
- '</div><h2>'+escape(featured?.title??title)+'</h2><p>'+escape(featured?featured.time+(featured.end?' – '+featured.end:'')+' · '+layers[featured.layer]:copy)+'</p></div>'+progress+'</div>'+
- '<details class="live-demo"><summary>Стани демо</summary><div class="livebar">'+segment({auto:'Авто',change:'Зміна',upcoming:'Подія',idea:'Ідея',empty:'Порожньо'},state.live,'live','Демонстраційні стани Live Card')+'</div></details>';
+ progressBar(percent,'Прогрес поточної події')+'</div>':'';
+ return '<div class="live" aria-label="Live Card"><div class="live-waves" aria-hidden="true"></div><div class="live-copy"><div class="eyebrow"><i class="dot"></i> '+
+ (variant==='current'?'Зараз · до '+current.end:featured?(featured.demo?'Деморозклад · '+layers[featured.layer]:'Попереду · '+featured.time):state.live==='auto'?'Огляд дня':'Приклад')+
+ '</div><h2>'+escape(featured?.title??title)+'</h2><p>'+escape(featured?featured.time+(featured.end?' – '+featured.end:'')+' · '+layers[featured.layer]:copy)+'</p></div>'+
+ '<div class="live-actions">'+iconButton('arrow',act,act==='event'?'Відкрити подію':label,value,'icon live-open')+progress+'</div></div>';
+}
+function demoPanel(){
+ return '<details class="live-demo"><summary>'+icon('info')+'<span><strong>Демо-режим</strong>'+
+ '<small>Приклади станів картки дня</small></span>'+icon('right')+'</summary><div class="livebar">'+
+ textLink('Відкрити демодень','demo-day')+
+ segment({auto:'Автоматично',change:'Зміна',upcoming:'Подія',idea:'Ідея',empty:'Без подій'},state.live,'live','Приклади станів картки дня')+
+ '</div></details>';
 }
 
 function agenda(events,title='Часова стрічка',home=false){
@@ -157,10 +163,15 @@ function dayOverview(events){
  const completed=planned.filter(event=>event.done).length;
  const percent=planned.length?Math.round(100*completed/planned.length):0;
  const rows=[['check','Заплановано подій',planned.length],['spark','AI-пропозиції',events.length-planned.length],['circle','Завершено',completed]];
- return '<section class="day-overview"><div class="overview-heading"><h2 id="context-title">'+icon('chart')+'Огляд дня</h2>'+
- '<div class="progress-ring" style="--percent:'+percent+'%" role="img" aria-label="'+(planned.length?'Завершено '+percent+' відсотків':'Немає запланованих подій')+'"><span>'+(planned.length?percent+'%':'—')+'</span></div></div>'+
+ return '<section class="day-overview" data-date="'+state.date+'" style="--percent:'+percent+'%"><div class="overview-heading"><h2 id="context-title">'+icon('chart')+'Огляд дня</h2>'+
+ '<div class="progress-ring" role="img" aria-label="'+(planned.length?'Завершено '+percent+' відсотків':'Немає запланованих подій')+'"><span>'+(planned.length?percent+'%':'—')+'</span></div></div>'+
  '<dl class="overview-list">'+rows.map(([glyph,label,value])=>'<div><dt>'+icon(glyph)+label+'</dt><dd>'+value+'</dd></div>').join('')+'</dl>'+
- progressBar(percent,'Частка завершених запланованих подій')+'</section>';
+ '<div class="overview-meter">'+progressBar(percent,'Частка завершених запланованих подій')+'</div></section>';
+}
+const ukrainianPlural=new Intl.PluralRules('uk');
+function countLabel(count,one,few,many){
+ const form=ukrainianPlural.select(count);
+ return count+' '+(form==='one'?one:form==='few'?few:many);
 }
 function schedule(weather){
  const home=state.screen==='home', day=state.mode==='day', events=eventsOn(state.date);
@@ -172,13 +183,15 @@ function schedule(weather){
  const detail=agenda(events,home&&day?'Розклад дня':'Порядок дня',home&&day);
  if(home&&day){
   const confirmed=events.filter(event=>event.layer!=='ai').length;
-  const heading=header(cap(dateLabel(state.date,{weekday:'long',day:'numeric',month:'long'})),'Доброго дня!',
-   'Заплановано подій: '+confirmed+' · AI-пропозицій: '+(events.length-confirmed));
-  return periodControls(weather)+'<div class="home-heading">'+heading+'</div><div class="home-grid workspace"><div class="home-main">'+
-   '<div class="day-calendar">'+overview+'</div>'+liveCard()+detail+'</div><aside class="home-context" aria-labelledby="context-title">'+
-   dayOverview(events)+'<section class="personal-space"><h2>Твій простір</h2>'+
-   action(icon('parallel')+'<span><strong>Parallel Days</strong><small>Порівняй дві версії дня</small></span>'+icon('right'),'nav','parallel','class="context-action"')+
-   action(icon('note')+'<span><strong>Швидка нотатка</strong><small>Збережи думку на цей день</small></span>'+icon('right'),'form','note','class="context-action"')+'</section></aside></div>';
+  const today=state.date===keyOf(new Date());
+  const heading=header(cap(dateLabel(state.date,{weekday:'long',day:'numeric',month:'long',year:'numeric'}).replace(/ р\.$/,'')),'Доброго дня!',
+   countLabel(confirmed,'запланована подія','заплановані події','запланованих подій')+' · '+
+   countLabel(events.length-confirmed,'AI-пропозиція','AI-пропозиції','AI-пропозицій'));
+  return periodControls(weather)+'<div class="home-heading'+(today?' is-today':'')+'">'+heading+'</div><div class="home-grid workspace"><div class="home-main">'+
+   '<div class="day-calendar">'+overview+'</div>'+liveCard()+detail+demoPanel()+'</div><aside class="home-context" aria-labelledby="context-title">'+
+   dayOverview(events)+'<section class="personal-space"><h2>'+icon('layers')+'Твій простір</h2><div class="space-actions">'+
+   action(icon('calendar')+'<span><strong>Плани днів</strong><small>Керуй своїм розкладом</small></span>'+icon('arrow'),'nav','calendar','class="context-action"')+
+   action(icon('note')+'<span><strong>Нотатки</strong><small>Ідеї, думки й нагадування</small></span>'+icon('arrow'),'form','note','class="context-action"')+'</div></section></aside></div>';
  }
  const body=day?'<div class="calendar-day"><div class="day-toolbar">'+overview+
   action(icon('plus')+'Додати подію','form','event','class="secondary"')+'</div>'+timeGrid(true)+

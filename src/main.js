@@ -1,38 +1,80 @@
 import {demoDay,data,state,modes,layers,uid,allEvents,eventsOn,confirmedOn,plans,plansOn,planBlocks,scenarioReport,removeEvent,resetData,persist} from './store.js';
-import {parse,keyOf,plusDays,dateLabel,cap,shortDate,minutes,overlaps} from './dates.js';
+import {parse,keyOf,plusDays,dateLabel,cap,shortDate,minutes,overlaps,clockTime} from './dates.js';
 import {escape,icon,action,iconButton,textLink} from './ui.js';
+import {moveLiquid,stopLiquid} from './liquid.js';
 import {schedule,parallel,layerPage,settings,miniCalendar,settingsRows,timeBalance} from './views.js';
 const app = document.querySelector('#app'), nav = document.querySelector('#nav');
 const dialog = document.querySelector('#dialog'), toast = document.querySelector('#toast');
 const mini = document.querySelector('#mini-calendar'), shell = document.querySelector('.shell');
 const labels = {home:'Головна',calendar:'Календар',parallel:'Parallel Days',layers:'Шари',settings:'Налаштування'};
 let toastTimer;
-let weather={icon:'cloud',label:'Погода',temperature:null,loading:false};
+let weather={icon:'cloud',label:'Погода',temperature:null,loading:false,location:''};
+let weatherLocation, weatherRequest=0, cityResults=[];
 function weatherButton(){
- return action(icon(weather.icon)+(weather.temperature===null?'':'<strong>'+weather.temperature+'°</strong>')+
- '<span>'+weather.label+'</span>','weather',undefined,'class="weather-button" aria-label="Погода: '+weather.label+'"');
+ const time=clockTime(new Date());
+ const temperature=weather.temperature===null?'':(weather.temperature>0?'+':'')+weather.temperature+'°';
+ return action(icon(weather.icon)+'<span class="weather-copy"><span>'+(temperature?'<strong>'+temperature+'</strong> ':'')+
+ escape(weather.label)+'</span><small>'+(weather.location?escape(weather.location)+' · ':'')+
+ '<time class="local-clock" datetime="'+time+'">'+time+'</time></small></span>',
+ 'weather',undefined,'class="weather-button" aria-label="'+escape(['Погода',temperature,weather.label,weather.location].filter(Boolean).join(' · '))+'"');
 }
-async function loadWeather(){
- if(weather.loading)return;
- weather={icon:'cloud',label:'Завантаження…',temperature:null,loading:true};
- refreshWeather();
+async function weatherJSON(url,query){
+ const response=await fetch(url+'?'+new URLSearchParams(query),{signal:AbortSignal.timeout(8000)});
+ if(!response.ok)throw new Error('Weather request failed');
+ return response.json();
+}
+async function loadWeather(location,background=false){
+ if(background&&weather.loading)return;
+ const request=++weatherRequest;
+ if(background)weather.loading=true;
+ else {
+  weatherLocation=null;
+  weather={icon:'cloud',label:'Завантаження…',temperature:null,loading:true,location:location?.name??''};
+  refreshWeather();
+ }
  try {
-  if(!navigator.geolocation)throw {code:1};
-  const {coords}=await new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(resolve,reject,{timeout:8000}));
-  const query=new URLSearchParams({latitude:coords.latitude.toFixed(2),longitude:coords.longitude.toFixed(2),current:'temperature_2m,weather_code'});
-  const response=await fetch('https://api.open-meteo.com/v1/forecast?'+query,{signal:AbortSignal.timeout(8000)});
-  if(!response.ok)throw new Error('Weather request failed');
-  const {current}=await response.json();
+  if(!location){
+   if(!navigator.geolocation)throw {code:1};
+   const {coords}=await new Promise((resolve,reject)=>navigator.geolocation.getCurrentPosition(resolve,reject,{timeout:8000}));
+   if(request!==weatherRequest)return;
+   location={latitude:coords.latitude,name:'За місцезнаходженням',longitude:coords.longitude};
+  }
+  const {current}=await weatherJSON('https://api.open-meteo.com/v1/forecast',{
+   latitude:location.latitude.toFixed(2),longitude:location.longitude.toFixed(2),current:'temperature_2m,weather_code'
+  });
+  if(request!==weatherRequest)return;
   if(!Number.isFinite(current?.temperature_2m)||!Number.isFinite(current?.weather_code))throw new Error('Invalid weather response');
   const code=current.weather_code;
   weather={icon:code===0?'sun':code<51?'cloud':'rain',
    label:code===0?'Ясно':code<3?'Легка хмарність':code===3?'Хмарно':code<51?'Туман':code>=95?'Гроза':
    (code>=71&&code<=77)||(code>=85&&code<=86)?'Сніг':'Дощ',
-   temperature:Math.round(current.temperature_2m),loading:false};
+   temperature:Math.round(current.temperature_2m),loading:false,location:location.name};
+  weatherLocation=location;
  } catch(error) {
-  weather={icon:'cloud',label:error.code===1?'Потрібна геолокація':'Погода недоступна',temperature:null,loading:false};
+  if(request!==weatherRequest)return;
+  weather={icon:'cloud',label:error.code===1?'Геолокація недоступна':error.code===2||error.code===3?'Не вдалося визначити місце':'Погода недоступна',
+   temperature:null,loading:false,location:location?.name??''};
  }
  refreshWeather();
+}
+async function findWeatherCity(form,name){
+ const results=form.querySelector('.city-results');
+ if(name.length<2){results.textContent='Введи щонайменше дві літери.';return;}
+ const submit=form.querySelector('button[type="submit"]');
+ if(submit.disabled)return;
+ submit.disabled=true;
+ cityResults=[];
+ results.textContent='Шукаємо місто…';
+ try {
+  const response=await weatherJSON('https://geocoding-api.open-meteo.com/v1/search',{name,count:6,language:'uk'});
+  if(!form.isConnected||!dialog.open)return;
+  cityResults=(response.results??[]).filter(city=>Number.isFinite(city.latitude)&&Number.isFinite(city.longitude));
+  results.innerHTML=cityResults.map((city,i)=>action('<span><strong>'+escape(city.name)+'</strong><small>'+
+   escape([city.admin1,city.country].filter(Boolean).join(', '))+'</small></span>'+icon('right'),
+   'weather-city-select',i,'class="row"')).join('')||'Міста не знайдено.';
+ } catch {
+  results.textContent='Пошук міст недоступний. Спробуй ще раз.';
+ } finally {submit.disabled=false;}
 }
 function refreshWeather(){
  const button=app.querySelector('.weather-button');
@@ -41,21 +83,32 @@ function refreshWeather(){
  button.outerHTML=weatherButton();
  if(focused)app.querySelector('.weather-button')?.focus({preventScroll:true});
 }
-function placeIndicator(group,selector,previous,animate){
+function placeIndicator(group,selector,previous,animate,reuse){
  const selected=group?.querySelector(selector);
  if(!selected?.getBoundingClientRect)return;
  const bounds=selected.getBoundingClientRect();
  if(!bounds.width)return;
- const indicator=group.querySelector('.active-indicator')??document.createElement('span');
+ const indicator=reuse??group.querySelector('.active-indicator')??document.createElement('span');
  indicator.className='active-indicator';
  indicator.setAttribute('aria-hidden','true');
  group.prepend(indicator);
+ stopLiquid(indicator);
  indicator.style.cssText='left:'+selected.offsetLeft+'px;top:'+selected.offsetTop+'px;width:'+bounds.width+'px;height:'+bounds.height+'px';
- if(animate&&previous&&!data.reduceMotion&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){
-  const x=previous.left-bounds.left,y=previous.top-bounds.top;
-  indicator.animate([{transform:'translate('+x+'px,'+y+'px)',width:previous.width+'px'},{transform:'none',width:bounds.width+'px'}],
-   {duration:310,easing:'cubic-bezier(.22,.75,.3,1)'});
+ if(animate&&previous?.width&&!data.reduceMotion&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+  const resting=indicator.getBoundingClientRect();
+  const x=previous.left+previous.width/2-resting.left-resting.width/2;
+  const y=previous.top+previous.height/2-resting.top-resting.height/2;
+  if(Math.abs(x)+Math.abs(y)+Math.abs(previous.width-resting.width)<1)return;
+  moveLiquid(group,indicator,previous,resting);
  }
+}
+function animateProgress(previous){
+ const ring=app.querySelector('.day-overview');
+ if(!ring||!previous||previous.date!==state.date||data.reduceMotion||
+    globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches)return;
+ const target=ring.style.getPropertyValue('--percent');
+ if(previous.value!==target)ring.animate([{'--percent':previous.value},{'--percent':target}],
+  {duration:340,easing:'ease-out'});
 }
 function notify(message){toast.textContent=message;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.textContent='',4000);}
 function save(message){
@@ -63,7 +116,10 @@ function save(message){
  catch {notify(message+' · Збережено до закриття сторінки');}
 }
 function render(animate=false){
- const oldPeriod=app.querySelector('.period-tabs .active-indicator')?.getBoundingClientRect();
+ const ring=app.querySelector('.day-overview');
+ const previousProgress=ring&&{date:ring.dataset.date,value:getComputedStyle(ring).getPropertyValue('--percent').trim()};
+ const periodIndicator=app.querySelector('.period-tabs .active-indicator');
+ const oldPeriod=periodIndicator?.getBoundingClientRect();
  const oldNav=nav.querySelector('.active-indicator')?.getBoundingClientRect();
  const active=document.activeElement;
  const demoOpen=Boolean(app.querySelector('.live-demo[open]'));
@@ -75,7 +131,9 @@ function render(animate=false){
  shell?.classList.toggle('reduce-motion',data.reduceMotion);
  if(mini){
   const control=active?.closest('#mini-calendar')?active.dataset.act:null;
+  const previousMonth=mini.querySelector('.mini-head')?.dataset.month;
   mini.innerHTML=miniCalendar();
+  revealMiniMonth(previousMonth);
   if(control==='mini-shift'||control==='mini-date')mini.querySelector('[data-act="'+control+'"][data-value="'+active.dataset.value+'"]')?.focus({preventScroll:true});
  }
  const day=app.querySelector('.day-scroll');
@@ -93,15 +151,21 @@ function render(animate=false){
   if(item.dataset.value===state.screen)item.setAttribute('aria-current','page');
   else item.removeAttribute('aria-current');
  }
- positionIndicators(oldPeriod,oldNav,animate);
+ positionIndicators(oldPeriod,oldNav,animate,periodIndicator);
+ animateProgress(previousProgress);
  if(restore){
   const [act,value]=restore;
   [...app.querySelectorAll('[data-act]')].find(el=>el.dataset.act===act&&el.dataset.value===value)?.focus({preventScroll:true});
  }
 }
-function positionIndicators(oldPeriod,oldNav,animate=false){
+function revealMiniMonth(previousMonth){
+ if(previousMonth&&previousMonth!==mini.querySelector('.mini-head')?.dataset.month){
+  mini.querySelector('.dates')?.classList.add('month-reveal');
+ }
+}
+function positionIndicators(oldPeriod,oldNav,animate=false,periodIndicator){
  if(!globalThis.matchMedia?.('(min-width: 1200px)').matches)return;
- placeIndicator(app.querySelector('.period-tabs .seg'),'[aria-pressed="true"]',oldPeriod,animate);
+ placeIndicator(app.querySelector('.period-tabs .seg'),'[aria-pressed="true"]',oldPeriod,animate,periodIndicator);
  placeIndicator(nav,'[aria-current="page"]',oldNav,animate);
 }
 globalThis.addEventListener?.('resize',()=>positionIndicators());
@@ -263,26 +327,26 @@ document.addEventListener('click',event=>{
  const {act,value}=button.dataset;
  switch(act){
  case 'nav': if(dialog.open)dialog.close();go(value);break;
- case 'mode': state.mode=value;state.explicitPeriod=true;modes[state.screen]=value;render(true);break;
+ case 'mode': state.mode=value;state.followToday=false;modes[state.screen]=value;render(true);break;
  case 'date':
  case 'mini-date': {
   const openDay=act==='mini-date'||state.mode==='month';
-  state.date=value;state.miniMonth=null;state.live='auto';
+  state.date=value;state.followToday=false;state.miniMonth=null;state.live='auto';
   if(act==='mini-date'&&!modes[state.screen]){state.screen='calendar';}
   if(openDay){state.mode='day';modes[state.screen]='day';}
   render(openDay);
   if(openDay)app.focus?.({preventScroll:true});
   break;
  }
- case 'shift': shift(Number(value));state.miniMonth=null;state.live='auto';render(true);break;
+ case 'shift': shift(Number(value));state.followToday=false;state.miniMonth=null;state.live='auto';render(true);break;
  case 'mini-shift': {
   const date=parse(state.miniMonth||state.date);
   state.miniMonth=keyOf(new Date(date.getFullYear(),date.getMonth()+Number(value),1,12));
   render();break;
  }
  case 'current-date': {
-  if(state.screen==='home'){state.mode=modes.home='day';state.explicitPeriod=false;}
-  state.date=keyOf(new Date());state.miniMonth=null;state.live='auto';render(true);
+  state.mode=modes[state.screen]='day';
+  state.date=keyOf(new Date());state.followToday=true;state.miniMonth=null;state.live='auto';render(true);
   const scroller=app.querySelector('.day-scroll');
   const line=scroller?.querySelector('.now-line');
   if(line)scroller.scrollTop=Math.max(0,line.offsetTop-scroller.clientHeight/3);
@@ -297,7 +361,7 @@ document.addEventListener('click',event=>{
  case 'live': state.live=value;render();break;
  case 'live-pause': {
   const item=allEvents().find(event=>event.id===value);
-  if(!item?.end)break;
+  if(item?.demo||!item?.end)break;
   const clock=new Date(), now=clock.getHours()*60+clock.getMinutes();
   const start=minutes(item.time), end=minutes(item.end);
   if(item.date!==keyOf(clock)||now<start||now>=end)break;
@@ -314,15 +378,23 @@ document.addEventListener('click',event=>{
  case 'plan-result': {
   const plan=[...plans,...data.plans].find(item=>item.id===value);
   if(!plan)break;
-  if(plan.date)state.date=plan.date;
+  if(plan.date){state.date=plan.date;state.followToday=false;}
   state.plan=value;
   dialog.close();go('parallel');break;
  }
  case 'weather':
-  modal('Погода','<p>Для прогнозу Open-Meteo отримає приблизні координати після твого дозволу.</p>'+
-   action('Оновити за місцезнаходженням','weather-load',undefined,'class="primary"'));
+  cityResults=[];
+  modal('Погода','<p>Обери місто або дозволь браузеру передати приблизні координати в Open-Meteo.</p>'+
+   action('Визначити місцезнаходження','weather-load',undefined,'class="secondary"')+
+   '<form class="weather-form" data-kind="weather-city"><label>Назва міста<input name="city" required minlength="2" maxlength="100" autocomplete="off"></label>'+
+   '<button type="submit" class="primary">Знайти місто</button><div class="list city-results" aria-live="polite"></div></form>');
   break;
  case 'weather-load': dialog.close();loadWeather();break;
+ case 'weather-city-select': {
+  const city=cityResults[Number(value)];
+  if(!city)break;
+  dialog.close();loadWeather(city);break;
+ }
  case 'notifications': {
   const clock=new Date(), now=clock.getHours()*60+clock.getMinutes();
   const upcoming=eventsOn(keyOf(clock)).filter(item=>item.layer!=='ai'&&!item.done&&minutes(item.time)>=now&&minutes(item.time)<=now+60);
@@ -415,9 +487,10 @@ document.addEventListener('click',event=>{
   dialog.close();save('Подію підтверджено');render();break;
  }
  case 'notes': modal('Збережені думки',data.notes.length?'<div class="list">'+data.notes.map(n=>'<div class="row"><span>'+escape(n.title)+'<p>'+shortDate(n.date)+'</p></span></div>').join('')+'</div>':'<p class="muted">Збережи першу думку через швидкі дії.</p>');break;
- case 'today': if(dialog.open)dialog.close();modes.home='day';state.explicitPeriod=false;state.date=demoDay;state.miniMonth=null;state.live='auto';go('home');break;
+ case 'today':
+ case 'demo-day': if(dialog.open)dialog.close();modes.home='day';state.followToday=false;state.date=demoDay;state.miniMonth=null;state.live='auto';go('home');break;
  case 'reset-confirm': modal('Скинути демо?','<p>Власні події, думки, сценарії та налаштування шарів буде видалено.</p>'+action('Скинути демо','reset',undefined,'class="primary"'));break;
- case 'reset': modes.home='day';modes.calendar='month';resetData();state.date=demoDay;state.miniMonth=null;state.explicitPeriod=false;state.pausedLive=null;state.live='auto';state.plan='focus';dialog.close();save('Початкові демодані відновлено');go('home');break;
+ case 'reset': modes.home='day';modes.calendar='month';resetData();state.date=demoDay;state.miniMonth=null;state.followToday=false;state.pausedLive=null;state.live='auto';state.plan='focus';dialog.close();save('Початкові демодані відновлено');go('home');break;
  }
 });
 dialog.addEventListener('click',event=>{
@@ -437,7 +510,9 @@ dialog.addEventListener('change',event=>{
 });
 dialog.addEventListener('submit',event=>{
  event.preventDefault();
- const form=event.target, fields=new FormData(form), title=fields.get('title').trim(), time=fields.get('time'), end=fields.get('end');
+ const form=event.target, fields=new FormData(form);
+ if(form.dataset.kind==='weather-city'){findWeatherCity(form,fields.get('city').trim());return;}
+ const title=fields.get('title').trim(), time=fields.get('time'), end=fields.get('end');
  if(!title){const input=form.elements.title;input.setCustomValidity('Введи текст');input.reportValidity();input.addEventListener('input',()=>input.setCustomValidity(''),{once:true});return;}
  if(end&&end<=time){
   const input=form.elements.end;
@@ -474,6 +549,7 @@ app.addEventListener('change',event=>{
  }
  if(event.target.id!=='scenario-date'||!event.target.value)return;
  state.date=event.target.value;
+ state.followToday=false;
  state.live='auto';
  render(true);
  app.querySelector('#scenario-date')?.focus({preventScroll:true});
@@ -489,7 +565,11 @@ document.addEventListener('keydown',event=>{
    event.preventDefault();
    const date=plusDays(event.target.dataset.value,offset);
    let target=mini.querySelector('[data-value="'+date+'"]');
-   if(!target){state.miniMonth=date;mini.innerHTML=miniCalendar();target=mini.querySelector('[data-value="'+date+'"]');}
+   if(!target){
+    const previousMonth=mini.querySelector('.mini-head')?.dataset.month;
+    state.miniMonth=date;mini.innerHTML=miniCalendar();revealMiniMonth(previousMonth);
+    target=mini.querySelector('[data-value="'+date+'"]');
+   }
    target?.focus();return;
   }
  }
@@ -501,6 +581,22 @@ document.addEventListener('keydown',event=>{
  }
 });
 render();
-if(typeof window.setInterval==='function')window.setInterval(()=>{
- if(state.screen==='home'&&state.mode==='day'&&!dialog.open&&!document.hidden)render();
-},30000);
+let lastClock=new Date();
+function syncClock(){
+ if(document.hidden)return;
+ const now=new Date(), day=keyOf(now), time=clockTime(now);
+ const clock=app.querySelector('.local-clock');
+ if(clock&&clock.dateTime!==time){clock.dateTime=time;clock.textContent=time;}
+ if(dialog.open)return;
+ const newDay=day!==keyOf(lastClock);
+ const newMinute=newDay||time!==clockTime(lastClock);
+ if(newMinute&&(app.querySelector('.liquid-layer')||nav.querySelector('.liquid-layer')))return;
+ if(newDay&&state.followToday){state.date=day;state.miniMonth=null;state.pausedLive=null;}
+ if(newDay||newMinute&&state.mode==='day'&&(state.screen==='home'||state.screen==='calendar'))render();
+ lastClock=now;
+}
+if(typeof window.setInterval==='function'){
+ window.setInterval(syncClock,1000);
+ window.setInterval(()=>{if(weatherLocation&&!document.hidden)loadWeather(weatherLocation,true);},900000);
+ document.addEventListener('visibilitychange',syncClock);
+}

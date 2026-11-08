@@ -26,7 +26,8 @@ globalThis.document = {
   querySelector: selector => elements[selector],
   addEventListener: (name, fn) => { listeners[name] = fn; },
 };
-globalThis.window = { scrollTo() {} };
+const intervals = new Map();
+globalThis.window = { scrollTo() {}, setInterval(fn, delay) { intervals.set(delay, fn); } };
 Object.defineProperty(globalThis, 'localStorage', {
   value: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
 });
@@ -37,6 +38,42 @@ globalThis.FormData = class {
 const store = await import('./src/store.js');
 await import('./src/main.js');
 const click = (act, value) => listeners.click({ target: { closest: () => ({ dataset: { act, value } }) } });
+click('demo-day');
+
+test('Today follows midnight while manual calendar selection stays pinned', t => {
+  t.mock.timers.enable({apis:['Date'],now:new Date(2026,11,31,23,59)});
+  click('current-date');
+  intervals.get(1000)();
+  assert.equal(store.state.date,'2026-12-31');
+  t.mock.timers.setTime(new Date(2027,0,1,0,0).getTime());
+  intervals.get(1000)();
+  assert.equal(store.state.date,'2027-01-01');
+  assert.match(app.innerHTML,/data-act="current-date" class="today-button" aria-pressed="true"/);
+  click('mini-date','2026-12-29');
+  t.mock.timers.setTime(new Date(2027,0,2,0,0).getTime());
+  intervals.get(1000)();
+  assert.equal(store.state.date,'2026-12-29');
+  assert.match(app.innerHTML,/data-act="current-date" class="today-button" aria-pressed="false"/);
+  click('demo-day');
+});
+
+test('the live card times a real event but gives demo events no countdown', t => {
+  t.mock.timers.enable({apis:['Date'],now:new Date(2026,10,8,9,45)});
+  click('today');
+  assert.match(app.innerHTML, /Синхронізація команди/);
+  assert.doesNotMatch(app.innerHTML, /data-act="live-pause"/);
+  const event = {id:'live-test',date:store.demoDay,time:'09:30',end:'10:00',title:'Реальна подія',layer:'work'};
+  store.data.events.push(event);
+  try {
+    click('live','auto');
+    assert.match(app.innerHTML, /data-act="event" data-value="live-test" class="icon live-open" aria-label="Відкрити подію"/);
+    assert.match(app.innerHTML, /data-act="live-pause" data-value="live-test"/);
+    assert.match(app.innerHTML, /value="50" aria-label="Прогрес поточної події"/);
+  } finally {
+    store.data.events.pop();
+    click('today');
+  }
+});
 
 test('dashboard statistics reflect actual completion, and search opens matching records', () => {
   assert.match(app.innerHTML, /Завершено 0 відсотків/);

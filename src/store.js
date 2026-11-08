@@ -1,4 +1,4 @@
-import {overlaps,timeSummary} from './dates.js';
+import {keyOf,overlaps,timeSummary} from './dates.js';
 
 const demoDay = '2026-11-08';
 const seed = [
@@ -23,7 +23,7 @@ function readData(){
  catch {return structuredClone(defaults);}
 }
 let data = readData();
-let state = {screen:'home',mode:'day',date:demoDay,live:'auto',plan:'focus'};
+let state = {screen:'home',mode:'day',date:keyOf(new Date()),followToday:true,live:'auto',plan:'focus'};
 const modes={home:'day',calendar:'month'};
 const layers = {work:'Робота',personal:'Особисте',ai:'AI-пропозиції'};
 const uid = () => globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)+Math.random().toString(36).slice(2);
