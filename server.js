@@ -1,10 +1,10 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 
-const types = { html: 'text/html', js: 'text/javascript', css: 'text/css' };
+const types = { html: 'text/html', js: 'text/javascript', css: 'text/css', svg: 'image/svg+xml' };
 const files = new Set([
   'index.html',
-  ...['main.js', 'ui.js', 'views.js', 'dates.js', 'store.js', 'base.css', 'workspace.css']
+  ...['main.js', 'ui.js', 'views.js', 'dates.js', 'store.js', 'base.css', 'workspace.css', 'desktop.css', 'sidebar-waves.svg']
     .map(name => 'src/' + name),
 ]);
 const port = Number(process.env.PORT ?? 4173);

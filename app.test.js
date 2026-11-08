@@ -9,8 +9,10 @@ const app = {
   addEventListener: (name, fn) => { listeners['app-' + name] = fn; },
 };
 const nav = { ...app };
+const searchResults = { innerHTML: '' };
 const dialog = {
   ...app,
+  querySelector: selector => selector === '#search-results' ? searchResults : null,
   open: false,
   addEventListener(name, fn) { listeners['dialog-' + name] = fn; },
   showModal() { this.open = true; },
@@ -36,8 +38,31 @@ const store = await import('./src/store.js');
 await import('./src/main.js');
 const click = (act, value) => listeners.click({ target: { closest: () => ({ dataset: { act, value } }) } });
 
+test('dashboard statistics reflect actual completion, and search opens matching records', () => {
+  assert.match(app.innerHTML, /Завершено 0 відсотків/);
+  click('event', 'e1');
+  click('complete', 'e1');
+  assert.match(app.innerHTML, /Завершено 33 відсотків/);
+  assert.match(app.innerHTML, /<progress max="100" value="33"/);
+  click('complete', 'e1');
+  click('close');
+
+  click('search');
+  const search = value => listeners['dialog-input']({target:{id:'local-search',value}});
+  search('  СИНХРОНІЗАЦІЯ  ');
+  assert.match(searchResults.innerHTML, /data-act="event" data-value="e1"/);
+  click('event', 'e1');
+  assert.match(dialog.innerHTML, /Синхронізація команди/);
+  click('search');
+  search('Повільний');
+  assert.match(searchResults.innerHTML, /data-act="plan-result" data-value="slow"/);
+  search('немає такого запису');
+  assert.match(searchResults.innerHTML, /Нічого не знайдено/);
+  click('close');
+});
+
 test('navigation, calendar views and date movement', () => {
-  assert.match(app.innerHTML, /Часова стрічка/);
+  assert.match(app.innerHTML, /Розклад дня/);
   assert.match(app.innerHTML, /Live Card/);
   click('nav', 'calendar');
   assert.match(app.innerHTML, /month-grid/);
@@ -139,4 +164,44 @@ test('overlapping events only split the width of their own time group', () => {
   } finally {
     store.data.events=store.data.events.filter(event=>event.id!=='overlap');
   }
+});
+
+test('scenario reports merge intervals and preserve uncertainty for older blocks', () => {
+  const baseline=[{time:'09:00',end:'10:00',title:'Ранкова зустріч'},{time:'09:30',end:'11:00',title:'Робочий блок'}];
+  const report=store.scenarioReport(baseline,{items:[['10:45','Перетин','11:30'],['11:30','Запис без кінця']]});
+  assert.equal(report.busy,150);
+  assert.equal(report.free,1290);
+  assert.equal(report.unknown,1);
+  assert.equal(report.conflicts,1);
+  assert.equal(report.rows[0].conflicts[0].title,'Робочий блок');
+});
+
+test('undo removes only records created by the selected application', () => {
+  const key=store.demoDay+'/focus';
+  const created=store.data.planEventIds[key];
+  assert.equal(created.length,2);
+  const unrelated=store.data.events.filter(event=>!created.includes(event.id)).map(event=>event.id);
+  click('plan-preview','focus');
+  click('plan-undo',key);
+  assert.ok(store.data.appliedPlans.includes(key));
+  click('plan-undo-confirm','focus');
+  click('plan-undo',key);
+  assert.deepEqual(store.data.events.map(event=>event.id),unrelated);
+  assert.equal(store.data.appliedPlans.includes(key),false);
+  assert.equal(JSON.parse(storage.get('unfold-v1')).planEventIds[key],undefined);
+});
+
+test('deletion requires confirmation and persists for local and demo events', () => {
+  const local=store.data.events.find(event=>event.title==='Робочий блок');
+  click('event',local.id);
+  click('event-delete',local.id);
+  assert.ok(store.allEvents().some(event=>event.id===local.id));
+  for(const id of [local.id,'e3']){
+    click('event-delete-confirm',id);
+    click('event-delete',id);
+    assert.ok(!store.allEvents().some(event=>event.id===id));
+  }
+  const saved=JSON.parse(storage.get('unfold-v1'));
+  assert.ok(!saved.events.some(event=>event.id===local.id));
+  assert.ok(saved.hiddenDemoEvents.includes('e3'));
 });
